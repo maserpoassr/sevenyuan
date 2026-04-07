@@ -27,6 +27,39 @@ from wxpusher_client import WxPusherClient, WxPusherError
 BASE_URL = "https://pay.ldxp.cn"
 GOODS_LIST_API = f"{BASE_URL}/shopApi/Shop/goodsList"
 
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "shop": {
+        "token": "GPT",
+        "goods_type": "card",
+        "target_goods_key": "q8za45",
+        "target_goods_name": "GPT PLUS 月卡",
+    },
+    "poll": {
+        "interval_sec": 30,
+        "timeout_sec": 10,
+        "retries": 3,
+        "backoff_sec": 1.5,
+    },
+    "notify": {
+        "cooldown_sec": 600,
+        "send_on_start_if_in_stock": False,
+    },
+    "stock_display": {
+        "few_max": 3,
+        "normal_max": 20,
+    },
+    "wxpusher": {
+        "app_token": "",
+        "uids": [],
+        "topic_ids": [],
+    },
+    "runtime": {
+        "state_file": "./state.json",
+        "log_file": "./monitor.log",
+        "log_level": "INFO",
+    },
+}
+
 
 class MonitorError(Exception):
     pass
@@ -79,12 +112,60 @@ def setup_logger(log_file: str, log_level: str) -> logging.Logger:
     return logger
 
 
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
 def load_config(config_path: Path) -> Dict[str, Any]:
-    if not config_path.exists():
-        raise MonitorError(f"配置文件不存在: {config_path}")
-    with config_path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f) or {}
-    return data
+    cfg = dict(DEFAULT_CONFIG)
+    if config_path.exists():
+        with config_path.open("r", encoding="utf-8") as f:
+            file_cfg = yaml.safe_load(f) or {}
+        cfg = deep_merge(cfg, file_cfg)
+    return cfg
+
+
+def parse_csv_env(value: str) -> list[str]:
+    if not value:
+        return []
+    return [x.strip() for x in value.split(",") if x.strip()]
+
+
+def apply_env_overrides(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    merged = deep_merge(DEFAULT_CONFIG, cfg)
+
+    env_app_token = os.getenv("WXPUSHER_APP_TOKEN", "").strip()
+    env_uids = parse_csv_env(os.getenv("WXPUSHER_UIDS", "").strip())
+    env_topic_ids_raw = parse_csv_env(os.getenv("WXPUSHER_TOPIC_IDS", "").strip())
+
+    env_topic_ids: list[int] = []
+    for item in env_topic_ids_raw:
+        try:
+            env_topic_ids.append(int(item))
+        except ValueError:
+            continue
+
+    if env_app_token:
+        merged["wxpusher"]["app_token"] = env_app_token
+    if env_uids:
+        merged["wxpusher"]["uids"] = env_uids
+    if env_topic_ids:
+        merged["wxpusher"]["topic_ids"] = env_topic_ids
+
+    env_state_file = os.getenv("STATE_FILE", "").strip()
+    env_log_file = os.getenv("LOG_FILE", "").strip()
+    if env_state_file:
+        merged["runtime"]["state_file"] = env_state_file
+    if env_log_file:
+        merged["runtime"]["log_file"] = env_log_file
+
+    return merged
 
 
 def load_state(state_path: Path) -> Dict[str, Any]:
@@ -194,11 +275,14 @@ def validate_config(cfg: Dict[str, Any]) -> None:
     if not cfg["shop"].get("target_goods_key") and not cfg["shop"].get("target_goods_name"):
         raise MonitorError("target_goods_key 与 target_goods_name 至少要配置一个")
     if not cfg["wxpusher"].get("app_token"):
-        raise MonitorError("wxpusher.app_token 不能为空")
+        raise MonitorError("wxpusher.app_token 不能为空（可用环境变量 WXPUSHER_APP_TOKEN）")
+    if not cfg["wxpusher"].get("uids") and not cfg["wxpusher"].get("topic_ids"):
+        raise MonitorError("wxpusher.uids/topic_ids 至少配置一个（可用环境变量 WXPUSHER_UIDS）")
 
 
 def run(config_path: Path, once: bool = False) -> None:
     cfg = load_config(config_path)
+    cfg = apply_env_overrides(cfg)
     validate_config(cfg)
 
     runtime = cfg["runtime"]
