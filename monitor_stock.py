@@ -206,18 +206,34 @@ def request_with_retry(
             try:
                 return resp.json()
             except Exception as exc:
-                snippet = (resp.text or "")[:200].replace("\n", " ")
                 if curl_requests is not None:
-                    c_resp = curl_requests.post(
-                        url,
-                        json=payload,
-                        timeout=timeout_sec,
-                        headers=dict(session.headers),
-                        impersonate="chrome124",
-                    )
-                    c_resp.raise_for_status()
-                    return c_resp.json()
-                raise MonitorError(f"接口返回非 JSON: status={resp.status_code}, body={snippet}") from exc
+                    try:
+                        c_resp = curl_requests.post(
+                            url,
+                            json=payload,
+                            timeout=timeout_sec,
+                            headers=dict(session.headers),
+                            impersonate="chrome124",
+                        )
+                        c_resp.raise_for_status()
+                        try:
+                            return c_resp.json()
+                        except Exception as c_exc:
+                            req_snippet = (resp.text or "")[:200].replace("\n", " ")
+                            curl_snippet = (c_resp.text or "")[:200].replace("\n", " ")
+                            raise MonitorError(
+                                "接口返回非 JSON: "
+                                f"requests_status={resp.status_code}, requests_body={req_snippet}, "
+                                f"curl_status={c_resp.status_code}, curl_body={curl_snippet}"
+                            ) from c_exc
+                    except Exception:
+                        raise
+
+                snippet = (resp.text or "")[:200].replace("\n", " ")
+                raise MonitorError(
+                    "接口返回非 JSON，且 curl_cffi 不可用: "
+                    f"status={resp.status_code}, body={snippet}"
+                ) from exc
         except Exception as exc:
             last_error = exc
             if attempt < max_retries:
@@ -340,6 +356,7 @@ def run(config_path: Path, once: bool = False) -> None:
         target_goods_key or "<未配置>",
         interval_sec,
     )
+    logger.info("curl_cffi 可用=%s", curl_requests is not None)
 
     session = requests.Session()
     session.headers.update(
