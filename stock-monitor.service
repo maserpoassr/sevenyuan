@@ -1,0 +1,14 @@
+[Unit]
+Description=LDXP single goods stock monitor
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/stock-monitor
+ExecStart=/opt/stock-monitor/.venv/bin/python /opt/stock-monitor/monitor_stock.py -c /opt/stock-monitor/config.yaml
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

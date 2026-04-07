@@ -1,0 +1,30 @@
+shop:
+  token: "GPT"
+  goods_type: "card"
+  target_goods_key: "q8za45"
+  target_goods_name: "GPT PLUS 月卡"
+
+poll:
+  interval_sec: 30
+  timeout_sec: 10
+  retries: 3
+  backoff_sec: 1.5
+
+notify:
+  cooldown_sec: 600
+  send_on_start_if_in_stock: false
+
+stock_display:
+  few_max: 3
+  normal_max: 20
+
+wxpusher:
+  app_token: "AT_xxx"
+  uids:
+    - "UID_xxx"
+  topic_ids: []
+
+runtime:
+  state_file: "./state.json"
+  log_file: "./monitor.log"
+  log_level: "INFO"
