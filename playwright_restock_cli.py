@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -104,6 +105,36 @@ def _norm_text(value: str) -> str:
     return " ".join((value or "").split())
 
 
+def _guess_shop_token(url: str) -> str:
+    path = (urlparse(url).path or "").strip("/")
+    if not path:
+        return "GPT"
+    last = path.split("/")[-1].strip()
+    return last or "GPT"
+
+
+def _pick_stock_from_goods_list(data: Dict[str, Any], target_name: str) -> tuple[str, str]:
+    items = ((data.get("data") or {}).get("list") or []) if isinstance(data, dict) else []
+    target = _norm_text(target_name)
+    target_lower = target.lower()
+
+    for item in items:
+        name = _norm_text(str(item.get("name") or ""))
+        if name and name == target:
+            stock = int(((item.get("extend") or {}).get("stock_count") or 0))
+            return name, ("缺货" if stock <= 0 else "有货")
+
+    for item in items:
+        name = _norm_text(str(item.get("name") or ""))
+        name_lower = name.lower()
+        if name and (name_lower in target_lower or target_lower in name_lower):
+            stock = int(((item.get("extend") or {}).get("stock_count") or 0))
+            return name, ("缺货" if stock <= 0 else "有货")
+
+    names = [_norm_text(str(x.get("name") or "")) for x in items if isinstance(x, dict)]
+    raise RuntimeError(f"API fallback 未找到目标商品: 目标={target}; 商品列表={names}")
+
+
 def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, timeout_ms: int) -> tuple[str, str]:
 
     with sync_playwright() as p:
@@ -166,6 +197,41 @@ def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, tim
                 break
 
             if not matched_title:
+                # Fallback: call same-origin API in browser context (often works when SPA render is delayed)
+                token = _guess_shop_token(url)
+                api_result = page.evaluate(
+                    r"""
+                    async (token) => {
+                      try {
+                        const resp = await fetch('/shopApi/Shop/goodsList', {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json;charset=UTF-8',
+                            'Accept': 'application/json, text/plain, */*'
+                          },
+                          body: JSON.stringify({ token, goods_type: 'card', current: 1, pageSize: 200 })
+                        });
+                        const text = await resp.text();
+                        try {
+                          const json = JSON.parse(text);
+                          return { ok: true, status: resp.status, json };
+                        } catch (_e) {
+                          return { ok: false, status: resp.status, text: text.slice(0, 240) };
+                        }
+                      } catch (e) {
+                        return { ok: false, status: -1, text: String(e) };
+                      }
+                    }
+                    """,
+                    token,
+                )
+
+                if isinstance(api_result, dict) and api_result.get("ok") and isinstance(api_result.get("json"), dict):
+                    try:
+                        return _pick_stock_from_goods_list(api_result["json"], product_name)
+                    except Exception:
+                        pass
+
                 page_title = _norm_text(page.title())
                 body_text = _norm_text(page.locator("body").first.inner_text()) if page.locator("body").count() else ""
                 body_hint = body_text[:120]
