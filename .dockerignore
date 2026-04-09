@@ -1,9 +1,10 @@
-__pycache__/
+.git
+.github
+.venv
+__pycache__
 *.pyc
 *.pyo
+*.pyd
 *.log
 state.json
-.venv/
-.git/
-.github/
-config.yaml
+changedetection.io
