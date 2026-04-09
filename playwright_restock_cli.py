@@ -105,19 +105,44 @@ def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, tim
     (targetName) => {
       const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
       const target = norm(targetName);
+      const targetLower = target.toLowerCase();
       const items = [...document.querySelectorAll('.goods-group-item')];
-      for (const item of items) {
-        const titleNode = item.querySelector('.goods-item-info-title');
-        if (!titleNode) continue;
-        const title = norm(titleNode.textContent);
-        if (title !== target) continue;
+      const seenTitles = [];
+
+      const readStock = (item, title) => {
         const stockNode = item.querySelector('.stock');
         if (!stockNode) {
-          return { ok: false, reason: 'stock_node_missing', title };
+          return { ok: false, reason: 'stock_node_missing', title, seen_titles: seenTitles };
         }
-        return { ok: true, stock: norm(stockNode.textContent), title };
+        return { ok: true, stock: norm(stockNode.textContent), title, seen_titles: seenTitles };
       }
-      return { ok: false, reason: 'product_not_found' };
+
+      for (const item of items) {
+        const titleNode = item.querySelector('.goods-item-info-title');
+        const imgAlt = norm((item.querySelector('.goods-item-img img') || {}).alt || '');
+        const title = norm((titleNode ? titleNode.textContent : '') || imgAlt);
+        if (title) seenTitles.push(title);
+
+        if (title === target || imgAlt === target) {
+          return readStock(item, title || imgAlt || target);
+        }
+      }
+
+      // Fallback: tolerate minor naming drift (contains match, case-insensitive)
+      for (const item of items) {
+        const titleNode = item.querySelector('.goods-item-info-title');
+        const imgAlt = norm((item.querySelector('.goods-item-img img') || {}).alt || '');
+        const title = norm((titleNode ? titleNode.textContent : '') || imgAlt);
+        const t = title.toLowerCase();
+        const a = imgAlt.toLowerCase();
+
+        if ((t && (t.includes(targetLower) || targetLower.includes(t))) ||
+            (a && (a.includes(targetLower) || targetLower.includes(a)))) {
+          return readStock(item, title || imgAlt || target);
+        }
+      }
+
+      return { ok: false, reason: 'product_not_found', seen_titles: seenTitles };
     }
     """
 
@@ -143,6 +168,9 @@ def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, tim
             result = page.evaluate(script, product_name)
             if not isinstance(result, dict) or not result.get("ok"):
                 reason = result.get("reason") if isinstance(result, dict) else "unknown"
+                seen_titles = result.get("seen_titles") if isinstance(result, dict) else None
+                if seen_titles:
+                    raise RuntimeError(f"解析失败: {reason}; 页面商品={seen_titles}")
                 raise RuntimeError(f"解析失败: {reason}")
             matched_title = str(result.get("title") or product_name).strip()
             stock_text = str(result.get("stock") or "").strip()
