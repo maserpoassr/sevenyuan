@@ -13,8 +13,8 @@ RUN chmod +x /app/docker-entrypoint.sh && mkdir -p /data
 
 ENV PYTHONUNBUFFERED=1
 ENV URL=https://pay.ldxp.cn/shop/GPT
-ENV PRODUCT_NAME=GPT PLUS 月卡
-ENV OOS_TEXT=缺货
+ENV PRODUCT_NAME="GPT PLUS 月卡"
+ENV OOS_TEXT="缺货"
 ENV CONFIRMATIONS=1
 ENV COOLDOWN=7200
 ENV INTERVAL=120
