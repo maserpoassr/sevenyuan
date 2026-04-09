@@ -135,6 +135,25 @@ def _pick_stock_from_goods_list(data: Dict[str, Any], target_name: str) -> tuple
     raise RuntimeError(f"API fallback 未找到目标商品: 目标={target}; 商品列表={names}")
 
 
+def _dismiss_notice_modal(page) -> None:
+    # The shop often opens a notice modal on first load, close it if present.
+    candidates = [
+        "button:has-text('关闭')",
+        "button:has-text('不再显示')",
+        ".arco-modal button:has-text('关闭')",
+        ".arco-modal button:has-text('不再显示')",
+    ]
+    for selector in candidates:
+        try:
+            btn = page.locator(selector).first
+            if btn.count() and btn.is_visible():
+                btn.click(timeout=1500)
+                page.wait_for_timeout(600)
+                return
+        except Exception:
+            continue
+
+
 def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, timeout_ms: int) -> tuple[str, str]:
 
     with sync_playwright() as p:
@@ -157,6 +176,7 @@ def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, tim
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             page.wait_for_timeout(3000)
+            _dismiss_notice_modal(page)
 
             # Vue/SPA sometimes renders after domcontentloaded/networkidle, wait a bit longer for product nodes.
             try:
@@ -199,6 +219,7 @@ def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, tim
             if not matched_title:
                 # Fallback: call same-origin API in browser context (often works when SPA render is delayed)
                 token = _guess_shop_token(url)
+                api_debug = ""
                 api_result = page.evaluate(
                     r"""
                     async (token) => {
@@ -229,18 +250,20 @@ def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, tim
                 if isinstance(api_result, dict) and api_result.get("ok") and isinstance(api_result.get("json"), dict):
                     try:
                         return _pick_stock_from_goods_list(api_result["json"], product_name)
-                    except Exception:
-                        pass
+                    except Exception as api_pick_exc:
+                        api_debug = str(api_pick_exc)
+                elif isinstance(api_result, dict):
+                    api_debug = f"API状态={api_result.get('status')}; API片段={_norm_text(str(api_result.get('text') or ''))[:120]}"
 
                 page_title = _norm_text(page.title())
                 body_text = _norm_text(page.locator("body").first.inner_text()) if page.locator("body").count() else ""
                 body_hint = body_text[:120]
                 if seen_titles:
                     raise RuntimeError(
-                        f"解析失败: product_not_found; 目标={target}; 页面商品={seen_titles}; 页面标题={page_title}; 页面内容片段={body_hint}"
+                        f"解析失败: product_not_found; 目标={target}; 页面商品={seen_titles}; 页面标题={page_title}; 页面内容片段={body_hint}; {api_debug}"
                     )
                 raise RuntimeError(
-                    f"解析失败: product_not_found; 目标={target}; 页面无商品卡片; 页面标题={page_title}; 页面内容片段={body_hint}"
+                    f"解析失败: product_not_found; 目标={target}; 页面无商品卡片; 页面标题={page_title}; 页面内容片段={body_hint}; {api_debug}"
                 )
 
             if not stock_text:
