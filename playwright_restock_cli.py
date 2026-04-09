@@ -100,51 +100,11 @@ def save_state(path: Path, state: StateData) -> None:
     temp.replace(path)
 
 
+def _norm_text(value: str) -> str:
+    return " ".join((value or "").split())
+
+
 def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, timeout_ms: int) -> tuple[str, str]:
-    script = r"""
-    (targetName) => {
-      const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
-      const target = norm(targetName);
-      const targetLower = target.toLowerCase();
-      const items = [...document.querySelectorAll('.goods-group-item')];
-      const seenTitles = [];
-
-      const readStock = (item, title) => {
-        const stockNode = item.querySelector('.stock');
-        if (!stockNode) {
-          return { ok: false, reason: 'stock_node_missing', title, seen_titles: seenTitles };
-        }
-        return { ok: true, stock: norm(stockNode.textContent), title, seen_titles: seenTitles };
-      }
-
-      for (const item of items) {
-        const titleNode = item.querySelector('.goods-item-info-title');
-        const imgAlt = norm((item.querySelector('.goods-item-img img') || {}).alt || '');
-        const title = norm((titleNode ? titleNode.textContent : '') || imgAlt);
-        if (title) seenTitles.push(title);
-
-        if (title === target || imgAlt === target) {
-          return readStock(item, title || imgAlt || target);
-        }
-      }
-
-      // Fallback: tolerate minor naming drift (contains match, case-insensitive)
-      for (const item of items) {
-        const titleNode = item.querySelector('.goods-item-info-title');
-        const imgAlt = norm((item.querySelector('.goods-item-img img') || {}).alt || '');
-        const title = norm((titleNode ? titleNode.textContent : '') || imgAlt);
-        const t = title.toLowerCase();
-        const a = imgAlt.toLowerCase();
-
-        if ((t && (t.includes(targetLower) || targetLower.includes(t))) ||
-            (a && (a.includes(targetLower) || targetLower.includes(a)))) {
-          return readStock(item, title || imgAlt || target);
-        }
-      }
-
-      return { ok: false, reason: 'product_not_found', seen_titles: seenTitles };
-    }
-    """
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -164,16 +124,59 @@ def fetch_stock_with_playwright(url: str, product_name: str, headless: bool, tim
         )
         page = context.new_page()
         try:
-            page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-            result = page.evaluate(script, product_name)
-            if not isinstance(result, dict) or not result.get("ok"):
-                reason = result.get("reason") if isinstance(result, dict) else "unknown"
-                seen_titles = result.get("seen_titles") if isinstance(result, dict) else None
+            page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            page.wait_for_timeout(3000)
+
+            # Vue/SPA sometimes renders after domcontentloaded/networkidle, wait a bit longer for product nodes.
+            try:
+                page.wait_for_selector(".goods-group-item", timeout=min(timeout_ms, 15000))
+            except PlaywrightTimeoutError:
+                pass
+
+            target = _norm_text(product_name)
+            target_lower = target.lower()
+            cards = page.locator(".goods-group-item")
+            card_count = cards.count()
+            seen_titles: List[str] = []
+            matched_title = ""
+            stock_text = ""
+
+            for i in range(card_count):
+                card = cards.nth(i)
+                title = _norm_text(card.locator(".goods-item-info-title").first.inner_text() if card.locator(".goods-item-info-title").count() else "")
+                img_alt = _norm_text(card.locator(".goods-item-img img").first.get_attribute("alt") if card.locator(".goods-item-img img").count() else "")
+                cand = title or img_alt
+                if cand:
+                    seen_titles.append(cand)
+
+                cand_lower = cand.lower()
+                if not cand:
+                    continue
+
+                is_exact = cand == target or img_alt == target
+                is_contains = cand_lower in target_lower or target_lower in cand_lower
+                if not (is_exact or is_contains):
+                    continue
+
+                stock_locator = card.locator(".stock")
+                if not stock_locator.count():
+                    raise RuntimeError(f"解析失败: stock_node_missing; 商品={cand}")
+                stock_text = _norm_text(stock_locator.first.inner_text())
+                matched_title = cand
+                break
+
+            if not matched_title:
+                page_title = _norm_text(page.title())
+                body_text = _norm_text(page.locator("body").first.inner_text()) if page.locator("body").count() else ""
+                body_hint = body_text[:120]
                 if seen_titles:
-                    raise RuntimeError(f"解析失败: {reason}; 页面商品={seen_titles}")
-                raise RuntimeError(f"解析失败: {reason}")
-            matched_title = str(result.get("title") or product_name).strip()
-            stock_text = str(result.get("stock") or "").strip()
+                    raise RuntimeError(
+                        f"解析失败: product_not_found; 目标={target}; 页面商品={seen_titles}; 页面标题={page_title}; 页面内容片段={body_hint}"
+                    )
+                raise RuntimeError(
+                    f"解析失败: product_not_found; 目标={target}; 页面无商品卡片; 页面标题={page_title}; 页面内容片段={body_hint}"
+                )
+
             if not stock_text:
                 raise RuntimeError("解析失败: stock 文本为空")
             return matched_title, stock_text
